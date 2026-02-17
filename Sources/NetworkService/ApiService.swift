@@ -515,8 +515,10 @@ extension ApiService {
 //MARK: API calls with custom token
 extension ApiService {
 
-    func postRequestAsyncWithCustomToken<T: Decodable, P: EndpointModel>(
-        _ request: EndpointModel,
+    extension ApiService {
+
+    func postRequestAsyncWithCustomToken<T: Decodable,  E: EndpointModel,P: Encodable>(
+        _ request: E,
         payload: P,
         responseType: T.Type,
         token: String
@@ -524,7 +526,7 @@ extension ApiService {
 
         do {
             // MARK: URL
-            guard let url = URL(string: request.url) else {
+            guard let url = URL(string: request.path) else {
                 throw APIError.unknownError
             }
 
