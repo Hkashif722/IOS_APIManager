@@ -512,5 +512,90 @@ extension ApiService {
     }
 }
 
+//MARK: API calls with custom token
+extension ApiService {
+
+    func postRequestAsyncWithCustomToken<T: Decodable, P: Encodable>(
+        _ request: RequestURN,
+        payload: P,
+        responseType: T.Type,
+        token: String
+    ) async throws -> T {
+
+        do {
+            // MARK: URL
+            guard let url = URL(string: request.url) else {
+                throw APIError.unknownError
+            }
+
+            // MARK: URLRequest
+            var urlRequest = URLRequest(url: url)
+            urlRequest.httpMethod = "POST"
+            urlRequest.timeoutInterval = 60
+            urlRequest.cachePolicy = .reloadIgnoringLocalCacheData
+
+            urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+            // MARK: Body (FIXED → uses passed payload)
+            let encoder = JSONEncoder()
+            urlRequest.httpBody = try encoder.encode(payload)
+
+            // MARK: Network Call
+            let (data, response) = try await URLSession.shared.data(for: urlRequest)
+
+            // MARK: Response validation
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw APIError.unknownError
+            }
+
+            guard 200...299 ~= httpResponse.statusCode else {
+                switch httpResponse.statusCode {
+                case 413:
+                    throw APIError.unauthorized
+                default:
+                    throw APIError.unknownError
+                }
+            }
+
+            // MARK: No data
+            guard !data.isEmpty else {
+                throw APIError.noData
+            }
+
+            // MARK: Decode
+            return try JSONDecoder().decode(T.self, from: data)
+
+        } catch let decodingError as DecodingError {
+            throw APIError.decodingError(decodingError)
+
+        } catch APIError.noData {
+            throw APIError.noData
+
+        } catch let error as AFError {
+            switch error {
+            case .responseValidationFailed(let reason):
+                switch reason {
+                case .unacceptableStatusCode(let code):
+                    switch code {
+                    case 413:
+                        throw APIError.unauthorized
+                    default:
+                        throw APIError.unknownError
+                    }
+                default:
+                    throw APIError.unknownError
+                }
+            default:
+                throw APIError.unknownError
+            }
+
+        } catch {
+            throw APIError.unknownError
+        }
+    }
+}
+    
+
 // MARK: - Empty Payload Helper
 private struct EmptyPayload: Encodable {}
