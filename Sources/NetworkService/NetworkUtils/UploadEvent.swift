@@ -8,7 +8,7 @@
 import Foundation
 
 //Helper Methods
-public enum UploadEvent {
+public enum UploadEvent: Sendable {
     case progress(Double)
     case response(String)
 }
