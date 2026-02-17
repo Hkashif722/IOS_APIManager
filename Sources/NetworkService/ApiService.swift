@@ -514,7 +514,7 @@ extension ApiService {
 
 //MARK: API calls with custom token
 public extension ApiService {
-    func postRequestAsyncWithCustomToken<T: Decodable, E: EndpointModel, P: Encodable>(
+    public func postRequestAsyncWithCustomToken<T: Decodable, E: EndpointModel, P: Encodable>(
         _ request: E,
         payload: P,
         responseType: T.Type,
