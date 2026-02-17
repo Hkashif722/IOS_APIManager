@@ -1,40 +1,35 @@
 import Foundation
 
-/// Validator for HTTP status codes
+/// Validator for HTTP status codes with specific error mapping
 public struct StatusCodeValidator: ResponseValidator {
     
-    public let acceptableStatusCodes: Range<Int>
-    
-    public init(acceptableStatusCodes: Range<Int> = 200..<300) {
-        self.acceptableStatusCodes = acceptableStatusCodes
-    }
+    public init() {}
     
     public func validate(data: Data, response: HTTPURLResponse) throws -> Data {
-        guard acceptableStatusCodes.contains(response.statusCode) else {
-            // Try to parse error message from response
-            let errorMessage = parseErrorMessage(from: data)
-            throw APIError.serverError(
-                statusCode: response.statusCode,
-                message: errorMessage
-            )
+        let statusCode = response.statusCode
+        
+        guard statusCode < 400 else {
+            let jsonString = String(data: data, encoding: .utf8) ?? ""
+            let jsonDict = (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+            
+            print("❌ HTTP \(statusCode): \(jsonString)")
+            
+            throw mapStatusCodeToError(statusCode, jsonDict: jsonDict, jsonString: jsonString)
         }
+        
         return data
     }
     
-    private func parseErrorMessage(from data: Data) -> String? {
-        // Try to parse common error response formats
-        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            // Check common error message keys
-            if let message = json["message"] as? String {
-                return message
-            }
-            if let error = json["error"] as? String {
-                return error
-            }
-            if let errorMessage = json["errorMessage"] as? String {
-                return errorMessage
-            }
+    private func mapStatusCodeToError(_ statusCode: Int, jsonDict: [String: Any], jsonString: String) -> APIError {
+        switch statusCode {
+        case 400:
+            return .badRequest(jsonDict, rawJSON: jsonString)
+        case 401, 413:
+            return .unauthorized
+        case 410:
+            return .resourceGone(jsonDict, rawJSON: jsonString)
+        default:
+            return .unknownError
         }
-        return String(data: data, encoding: .utf8)
     }
 }

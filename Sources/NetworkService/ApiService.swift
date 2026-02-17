@@ -263,5 +263,254 @@ public class ApiService {
     }
 }
 
+extension ApiService {
+    // MARK: - File Upload Methods with Detailed Progress
+
+    /// Upload a single file with detailed progress tracking
+    /// - Parameters:
+    ///   - type: Response type conforming to Decodable
+    ///   - model: Endpoint model defining the request
+    ///   - fileURL: URL of the file to upload (optional)
+    ///   - fileName: Form field name for the file (default: "file")
+    ///   - parameters: Additional form parameters
+    /// - Returns: AsyncThrowingStream emitting progress and response
+    public func uploadFile<T: Decodable, E: EndpointModel>(
+        type: T.Type,
+        model: E,
+        fileURL: URL?,
+        fileName: String = "file",
+        parameters: [String: String]? = nil
+    ) -> AsyncThrowingStream<UploadEvent, Error> {
+        
+        AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    // Construct URL
+                    guard let url = URL(string: model.baseURL + model.path) else {
+                        continuation.finish(throwing: APIError.invalidURL)
+                        return
+                    }
+                    
+                    #if DEBUG
+                    print("📤 Upload URL: \(url.absoluteString)")
+                    #endif
+                    
+                    // Create boundary for multipart form data
+                    let boundary = "Boundary-\(UUID().uuidString)"
+                    
+                    // Create request
+                    var request = URLRequest(url: url)
+                    request.httpMethod = "POST"
+                    request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+                    
+                    // Add custom headers from model
+                    model.headers?.forEach { key, value in
+                        request.setValue(value, forHTTPHeaderField: key)
+                    }
+                    
+                    #if DEBUG
+                    print("📤 Upload Headers: \(model.headers ?? [:])")
+                    #endif
+                    
+                    // Build multipart form data
+                    var body = Data()
+                    
+                    // Add file if provided
+                    if let fileURL = fileURL {
+                        do {
+                            let fileData = try Data(contentsOf: fileURL)
+                            let mimeType = NetworkHelperMethods.mimeType(for: fileURL.pathExtension)
+                            
+                            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+                            body.append("Content-Disposition: form-data; name=\"\(fileName)\"; filename=\"\(fileURL.lastPathComponent)\"\r\n".data(using: .utf8)!)
+                            body.append("Content-Type: \(mimeType)\r\n\r\n".data(using: .utf8)!)
+                            body.append(fileData)
+                            body.append("\r\n".data(using: .utf8)!)
+                            
+                            #if DEBUG
+                            print("📤 File: \(fileURL.lastPathComponent) (\(fileData.count) bytes, \(mimeType))")
+                            #endif
+                        } catch {
+                            continuation.finish(throwing: error)
+                            return
+                        }
+                    }
+                    
+                    // Add parameters
+                    parameters?.forEach { key, value in
+                        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+                        body.append("Content-Disposition: form-data; name=\"\(key)\"\r\n\r\n".data(using: .utf8)!)
+                        body.append("\(value)\r\n".data(using: .utf8)!)
+                    }
+                    
+                    // Close boundary
+                    body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+                    
+                    // Apply middleware to prepare request
+                    for middleware in middlewares {
+                        request = try middleware.prepare(request: request)
+                    }
+                    
+                    // Create delegate
+                    let delegate = UploadDelegate<T>(
+                        continuation: continuation,
+                        decoder: decoder,
+                        middlewares: middlewares,
+                        validators: validators
+                    )
+                    
+                    // Create custom session with delegate for progress tracking
+                    let config = URLSessionConfiguration.default
+                    config.timeoutIntervalForRequest = 300 // 5 minutes for large files
+                    config.timeoutIntervalForResource = 600 // 10 minutes
+                    
+                    let uploadSession = URLSession(
+                        configuration: config,
+                        delegate: delegate,
+                        delegateQueue: nil
+                    )
+                    
+                    // Create and start upload task
+                    let task = uploadSession.uploadTask(with: request, from: body)
+                    delegate.task = task
+                    task.resume()
+                    
+                    #if DEBUG
+                    print("📤 Upload task started")
+                    #endif
+                    
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+
+    /// Upload multiple files with detailed progress tracking
+    /// - Parameters:
+    ///   - type: Response type conforming to Decodable
+    ///   - model: Endpoint model defining the request
+    ///   - fileURLs: Array of file URLs to upload
+    ///   - fileName: Base form field name for files
+    ///   - parameters: Additional form parameters
+    /// - Returns: AsyncThrowingStream emitting progress and response
+    public func uploadMultipleFiles<T: Decodable, E: EndpointModel>(
+        type: T.Type,
+        model: E,
+        fileURLs: [URL],
+        fileName: String = "file",
+        parameters: [String: String]? = nil
+    ) -> AsyncThrowingStream<UploadEvent, Error> {
+        
+        AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    // Construct URL
+                    guard let url = URL(string: model.baseURL + model.path) else {
+                        continuation.finish(throwing: APIError.invalidURL)
+                        return
+                    }
+                    
+                    #if DEBUG
+                    print("📤 Multiple Upload URL: \(url.absoluteString)")
+                    print("📤 Files count: \(fileURLs.count)")
+                    #endif
+                    
+                    // Create boundary for multipart form data
+                    let boundary = "Boundary-\(UUID().uuidString)"
+                    
+                    // Create request
+                    var request = URLRequest(url: url)
+                    request.httpMethod = "POST"
+                    request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+                    
+                    // Add custom headers from model
+                    model.headers?.forEach { key, value in
+                        request.setValue(value, forHTTPHeaderField: key)
+                    }
+                    
+                    // Build multipart form data
+                    var body = Data()
+                    var totalFileSize: Int64 = 0
+                    
+                    // Add files
+                    for (index, fileURL) in fileURLs.enumerated() {
+                        do {
+                            let fileData = try Data(contentsOf: fileURL)
+                            totalFileSize += Int64(fileData.count)
+                            let mimeType = NetworkHelperMethods.mimeType(for: fileURL.pathExtension)
+                            
+                            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+                            body.append("Content-Disposition: form-data; name=\"\(fileName)\(index)\"; filename=\"\(fileURL.lastPathComponent)\"\r\n".data(using: .utf8)!)
+                            body.append("Content-Type: \(mimeType)\r\n\r\n".data(using: .utf8)!)
+                            body.append(fileData)
+                            body.append("\r\n".data(using: .utf8)!)
+                            
+                            #if DEBUG
+                            print("📤 File \(index + 1): \(fileURL.lastPathComponent) (\(fileData.count) bytes)")
+                            #endif
+                        } catch {
+                            #if DEBUG
+                            print("⚠️ Error reading file at \(fileURL): \(error)")
+                            #endif
+                            continue
+                        }
+                    }
+                    
+                    #if DEBUG
+                    print("📤 Total file size: \(totalFileSize) bytes")
+                    #endif
+                    
+                    // Add parameters
+                    parameters?.forEach { key, value in
+                        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+                        body.append("Content-Disposition: form-data; name=\"\(key)\"\r\n\r\n".data(using: .utf8)!)
+                        body.append("\(value)\r\n".data(using: .utf8)!)
+                    }
+                    
+                    // Close boundary
+                    body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+                    
+                    // Apply middleware to prepare request
+                    for middleware in middlewares {
+                        request = try middleware.prepare(request: request)
+                    }
+                    
+                    // Create delegate
+                    let delegate = UploadDelegate<T>(
+                        continuation: continuation,
+                        decoder: decoder,
+                        middlewares: middlewares,
+                        validators: validators
+                    )
+                    
+                    // Create custom session with delegate for progress tracking
+                    let config = URLSessionConfiguration.default
+                    config.timeoutIntervalForRequest = 300 // 5 minutes
+                    config.timeoutIntervalForResource = 600 // 10 minutes
+                    
+                    let uploadSession = URLSession(
+                        configuration: config,
+                        delegate: delegate,
+                        delegateQueue: nil
+                    )
+                    
+                    // Create and start upload task
+                    let task = uploadSession.uploadTask(with: request, from: body)
+                    delegate.task = task
+                    task.resume()
+                    
+                    #if DEBUG
+                    print("📤 Multiple upload task started")
+                    #endif
+                    
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+}
+
 // MARK: - Empty Payload Helper
 private struct EmptyPayload: Encodable {}
