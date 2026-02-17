@@ -514,82 +514,54 @@ extension ApiService {
 
 //MARK: API calls with custom token
 public extension ApiService {
-
-    publicfunc postRequestAsyncWithCustomToken<T: Decodable,  E: EndpointModel,P: Encodable>(
+    func postRequestAsyncWithCustomToken<T: Decodable, E: EndpointModel, P: Encodable>(
         _ request: E,
         payload: P,
         responseType: T.Type,
         token: String
     ) async throws -> T {
+        // MARK: URL
+        guard let url = URL(string: request.baseURL + request.path) else {
+            throw APIError.invalidURL
+        }
 
+        // MARK: URLRequest
+        var urlRequest = URLRequest(url: url)
+        urlRequest.httpMethod = "POST"
+        urlRequest.timeoutInterval = 60
+        urlRequest.cachePolicy = .reloadIgnoringLocalCacheData
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+        request.headers?.forEach { key, value in
+            urlRequest.setValue(value, forHTTPHeaderField: key)
+        }
+
+        // MARK: Body
+        urlRequest.httpBody = try JSONEncoder().encode(payload)
+
+        // MARK: Network Call
+        let (data, response) = try await URLSession.shared.data(for: urlRequest)
+
+        // MARK: Response Validation
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.unknownError
+        }
+
+        guard 200...299 ~= httpResponse.statusCode else {
+            throw httpResponse.statusCode == 413 ? APIError.unauthorized : APIError.unknownError
+        }
+
+        // MARK: No Data
+        guard !data.isEmpty else {
+            throw APIError.noData
+        }
+
+        // MARK: Decode
         do {
-            // MARK: URL
-            guard let url = URL(string: request.path) else {
-                throw APIError.unknownError
-            }
-
-            // MARK: URLRequest
-            var urlRequest = URLRequest(url: url)
-            urlRequest.httpMethod = "POST"
-            urlRequest.timeoutInterval = 60
-            urlRequest.cachePolicy = .reloadIgnoringLocalCacheData
-
-            urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-
-            // MARK: Body (FIXED → uses passed payload)
-            let encoder = JSONEncoder()
-            urlRequest.httpBody = try encoder.encode(payload)
-
-            // MARK: Network Call
-            let (data, response) = try await URLSession.shared.data(for: urlRequest)
-
-            // MARK: Response validation
-            guard let httpResponse = response as? HTTPURLResponse else {
-                throw APIError.unknownError
-            }
-
-            guard 200...299 ~= httpResponse.statusCode else {
-                switch httpResponse.statusCode {
-                case 413:
-                    throw APIError.unauthorized
-                default:
-                    throw APIError.unknownError
-                }
-            }
-
-            // MARK: No data
-            guard !data.isEmpty else {
-                throw APIError.noData
-            }
-
-            // MARK: Decode
             return try JSONDecoder().decode(T.self, from: data)
-
         } catch let decodingError as DecodingError {
             throw APIError.decodingError(decodingError)
-
-        } catch APIError.noData {
-            throw APIError.noData
-
-        } catch let error as AFError {
-            switch error {
-            case .responseValidationFailed(let reason):
-                switch reason {
-                case .unacceptableStatusCode(let code):
-                    switch code {
-                    case 413:
-                        throw APIError.unauthorized
-                    default:
-                        throw APIError.unknownError
-                    }
-                default:
-                    throw APIError.unknownError
-                }
-            default:
-                throw APIError.unknownError
-            }
-
         } catch {
             throw APIError.unknownError
         }
